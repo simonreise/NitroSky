@@ -518,7 +518,7 @@ class GamepadEnv(Env):
         start = time.perf_counter()
         self.unpause()
         # Wait until the next step
-        end = start + self.step_duration
+        end = start + duration
         now = time.perf_counter()
         while now < end:
             now = time.perf_counter()

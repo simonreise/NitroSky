@@ -19,6 +19,10 @@ parser = argparse.ArgumentParser(description="VLM Inference")
 parser.add_argument("--process", type=str, default="celeste.exe", help="Game to play")
 parser.add_argument("--allow-menu", action="store_true", help="Allow menu actions (Disabled by default)")
 parser.add_argument("--port", type=int, default=5555, help="Port for model server")
+parser.add_argument("--frame-skip", type=int, default=1, help="Number of frames to skip (hold action) between inference steps")
+parser.add_argument("--record-video", action="store_true", help="Record clean gameplay video")
+parser.add_argument("--record-debug-video", action="store_true", help="Record debug video with visualization overlay")
+parser.add_argument("--save-debug-images", action="store_true", help="Save debug PNG images for every step")
 
 args = parser.parse_args()
 
@@ -146,12 +150,19 @@ obs, reward, terminated, truncated, info = env.step(action=zero_action)
 frames = None
 step_count = 0
 
-with VideoRecorder(str(PATH_MP4_DEBUG), fps=60, crf=32, preset="medium") as debug_recorder:
-    with VideoRecorder(str(PATH_MP4_CLEAN), fps=60, crf=28, preset="medium") as clean_recorder:
+# Use dummy context manager if recording is disabled
+from  contextlib import nullcontext
+
+debug_ctx = VideoRecorder(str(PATH_MP4_DEBUG), fps=60, crf=32, preset="medium") if args.record_debug_video else nullcontext()
+clean_ctx = VideoRecorder(str(PATH_MP4_CLEAN), fps=60, crf=28, preset="medium") if args.record_video else nullcontext()
+
+with debug_ctx as debug_recorder:
+    with clean_ctx as clean_recorder:
         try:
             while True:
                 obs = preprocess_img(obs)
-                obs.save(PATH_DEBUG / f"{step_count:05d}.png")
+                if args.save_debug_images:
+                    obs.save(PATH_DEBUG / f"{step_count:05d}.png")
 
                 pred = policy.predict(obs)
 
@@ -196,12 +207,17 @@ with VideoRecorder(str(PATH_MP4_DEBUG), fps=60, crf=32, preset="medium") as debu
                         a["START"] = 0
                         a["BACK"] = 0
 
-                    for _ in range(action_downsample_ratio):
-                        obs, reward, terminated, truncated, info = env.step(action=a)
+                    # Calculate duration for this action
+                    # We hold the action for (action_downsample_ratio * frame_skip) frames
+                    # The total duration is passed to env.step so it can wait appropriately
+                    total_duration = env.step_duration * action_downsample_ratio * args.frame_skip
+                    
+                    obs, reward, terminated, truncated, info = env.step(action=a, step_duration=total_duration)
 
-                        # resize obs to 720p
-                        obs_viz = np.array(obs).copy()
-                        clean_viz = cv2.resize(obs_viz, (1920, 1080), interpolation=cv2.INTER_AREA)
+                    # resize obs to 720p
+                    obs_viz = np.array(obs).copy()
+                    
+                    if args.record_debug_video:
                         debug_viz = create_viz(
                             cv2.resize(obs_viz, (1280, 720), interpolation=cv2.INTER_AREA), # 720p
                             i,
@@ -211,6 +227,9 @@ with VideoRecorder(str(PATH_MP4_DEBUG), fps=60, crf=32, preset="medium") as debu
                             token_set=TOKEN_SET
                         )
                         debug_recorder.add_frame(debug_viz)
+                    
+                    if args.record_video:
+                        clean_viz = cv2.resize(obs_viz, (1920, 1080), interpolation=cv2.INTER_AREA)
                         clean_recorder.add_frame(clean_viz)
 
                 # Append env_actions dictionnary to JSONL file
